@@ -1,4 +1,4 @@
-import {getGroupsCustomAttributeName, parseGroupsAttribute, PreTokenGenerationEvent} from "./helpers";
+import { getGroupsCustomAttributeName, parseGroupsAttribute, PreTokenGenerationEvent } from "./helpers";
 
 // noinspection JSUnusedGlobalSymbols
 /**
@@ -42,16 +42,32 @@ import {getGroupsCustomAttributeName, parseGroupsAttribute, PreTokenGenerationEv
  */
 export const handler = async (event: PreTokenGenerationEvent): Promise<PreTokenGenerationEvent> => {
 
+  const newGroups = []
+  const providerType: string = JSON.parse(event.request.userAttributes.identities)[0].providerType
+  const idpGroups = event.request.userAttributes[getGroupsCustomAttributeName()]
+  switch (providerType) {
+    case "OIDC":
+      newGroups.push(...JSON.parse(idpGroups))
+      break;
+    case "SAML":
+      // groups from the IdP (parses a single value, e.g. "[g1,g2]" into a string array, e.g ["g1","g2"])
+      newGroups.push(...parseGroupsAttribute(idpGroups))
+      break;
+    default:
+      console.warn("Not handling groups for " + providerType + ": " + idpGroups);
+      break;
+  }
+
   event.response.claimsOverrideDetails = {
     groupOverrideDetails: {
       groupsToOverride:
         [
           // any existing groups the user may belong to
           ...event.request.groupConfiguration.groupsToOverride,
-          // groups from the IdP (parses a single value, e.g. "[g1,g2]" into a string array, e.g ["g1","g2"])
-          ...parseGroupsAttribute(event.request.userAttributes[getGroupsCustomAttributeName()])
+          ...newGroups
         ]
     }
   };
+
   return event;
 };

@@ -1,4 +1,4 @@
-import {Utils} from "./utils";
+import { Utils } from "./utils";
 import fs = require("fs");
 
 
@@ -20,7 +20,7 @@ class GenerateConfig {
     const appURL = outputsByName.get("AppUrl");
     const uiBucketName = outputsByName.get("UIBucketName") || "";
 
-    const cognitoDomain = `${cognitoDomainPrefix}.auth.${region}.amazoncognito.com`;
+    const cognitoDomain = `${cognitoDomainPrefix}.auth-fips.${region}.amazoncognito.com`;
     const params = {
       cognitoDomain: cognitoDomain,
       region: region,
@@ -42,7 +42,8 @@ class GenerateConfig {
     
 IdP Settings:
 
-  - Single sign on URL / Assertion Consumer Service (ACS) URL: https://${cognitoDomain}/saml2/idpresponse
+  - SAML Single sign on URL / Assertion Consumer Service (ACS) URL: https://${cognitoDomain}/saml2/idpresponse
+  - OIDC Single sign on URL / Assertion Consumer Service (ACS) URL: https://${cognitoDomain}/oauth2/idpresponse
   - Audience URI (SP Entity ID): urn:amazon:cognito:sp:${userPoolId}
   - Group Attribute Statements (optional): Name=groups, Filter=Starts With (prefix) / Regex (.*) 
      

@@ -6,17 +6,18 @@ import cognito = require("@aws-cdk/aws-cognito");
 import iam = require("@aws-cdk/aws-iam");
 import s3 = require("@aws-cdk/aws-s3");
 import cloudfront = require("@aws-cdk/aws-cloudfront");
-import {BillingMode, StreamViewType} from "@aws-cdk/aws-dynamodb";
+import { AuthorizationType } from "@aws-cdk/aws-apigateway";
+import { RestApiProps } from "@aws-cdk/aws-apigateway/lib/restapi";
+import { CloudFrontWebDistribution } from "@aws-cdk/aws-cloudfront";
+import { CfnUserPool, CfnUserPoolIdentityProvider, UserPool } from "@aws-cdk/aws-cognito";
+import { BillingMode, StreamViewType } from "@aws-cdk/aws-dynamodb";
+import { Runtime } from "@aws-cdk/aws-lambda";
+import { Bucket } from "@aws-cdk/aws-s3";
+import { Duration } from "@aws-cdk/core";
 import "source-map-support/register";
-import {AuthorizationType} from "@aws-cdk/aws-apigateway";
-import {CfnUserPool, CfnUserPoolIdentityProvider, SignInType, UserPool, UserPoolAttribute} from "@aws-cdk/aws-cognito";
-import {Utils} from "./utils";
-import {Runtime} from "@aws-cdk/aws-lambda";
+import { URL } from "url";
+import { Utils } from "./utils";
 
-import {URL} from "url";
-import {Duration} from "@aws-cdk/core";
-import {Bucket} from "@aws-cdk/aws-s3";
-import {CloudFrontWebDistribution} from "@aws-cdk/aws-cloudfront";
 
 /**
  * Define a CloudFormation stack that creates a serverless application with
@@ -32,9 +33,17 @@ export class BackendStack extends cdk.Stack {
     // ========================================================================
 
     const domain = Utils.getEnv("COGNITO_DOMAIN_NAME");
-    const identityProviderName = Utils.getEnv("IDENTITY_PROVIDER_NAME", "");
 
+    const oidcProviderName = Utils.getEnv("OIDC_PROVIDER_NAME", "");
+    const oidcProviderIssuer = Utils.getEnv("OIDC_PROVIDER_ISSUER_URL", "");
+    const oidcClientId = Utils.getEnv("OIDC_CLIENT_ID", "");
+    const oidcClientSecret = Utils.getEnv("OIDC_CLIENT_SECRET", "");
+    const oidcAttributesRequestMethod = Utils.getEnv("OIDC_ATTRIBUTES_REQUEST_METHOD", "GET");
+
+    const identityProviderName = Utils.getEnv("IDENTITY_PROVIDER_NAME", "");
     const identityProviderMetadataURLOrFile = Utils.getEnv("IDENTITY_PROVIDER_METADATA", "");
+
+    const allowUsernamePassword = Utils.asBool(Utils.getEnv("ALLOW_COGNITO_USERS", "true"));
 
     const appFrontendDeployMode = Utils.getEnv("APP_FRONTEND_DEPLOY_MODE", "");
 
@@ -121,14 +130,13 @@ export class BackendStack extends cdk.Stack {
 
     // high level construct
     const userPool: UserPool = new cognito.UserPool(this, id + "Pool", {
-      signInType: SignInType.EMAIL,
-      autoVerifiedAttributes: [UserPoolAttribute.EMAIL],
+      signInAliases: { email: true },
       lambdaTriggers: {preTokenGeneration: preTokenGeneration}
     });
 
     // any properties that are not part of the high level construct can be added using this method
     const userPoolCfn = userPool.node.defaultChild as CfnUserPool;
-    userPoolCfn.userPoolAddOns = { advancedSecurityMode: "ENFORCED" }
+    // userPoolCfn.userPoolAddOns = { advancedSecurityMode: "OFF" }
     userPoolCfn.schema = [{
       name: groupsAttributeName,
       attributeDataType: "String",
@@ -235,7 +243,11 @@ export class BackendStack extends cdk.Stack {
     // The API
     // ------------------------------------------------------------------------
 
-    const api = new apigateway.RestApi(this, id + "API");
+    const restApiProps: RestApiProps = {
+      endpointTypes:  [ apigateway.EndpointType.REGIONAL ]
+    }
+    const api = new apigateway.RestApi(this, id + "API", restApiProps);
+
     const integration = new apigateway.LambdaIntegration(apiFunction, {
       // lambda proxy integration:
       // see https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html#api-gateway-create-api-as-simple-proxy
@@ -299,13 +311,33 @@ export class BackendStack extends cdk.Stack {
     // See also:
     // - https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-saml-idp.html
 
-    // mapping from IdP fields to Cognito attributes
-    const supportedIdentityProviders = ["COGNITO"];
-    let cognitoIdp: CfnUserPoolIdentityProvider | undefined = undefined;
+    const cognitoIdps: { [key: string]:  CfnUserPoolIdentityProvider | null } = {};
+
+    if (allowUsernamePassword) {
+      cognitoIdps["COGNITO"] = null;
+    }
+
+    if (oidcProviderName && oidcProviderIssuer && oidcClientId && oidcClientSecret) {
+      cognitoIdps[oidcProviderName] = new cognito.CfnUserPoolIdentityProvider(this, "CognitoAadOidc", {
+        providerName: oidcProviderName,
+        providerDetails: {
+          "client_id": oidcClientId,
+          "client_secret": oidcClientSecret,
+          "attributes_request_method": oidcAttributesRequestMethod,
+          "oidc_issuer": oidcProviderIssuer,
+          "authorize_scopes": "email profile openid",
+        },
+        providerType: "OIDC",
+        attributeMapping: {
+          "username": "sub",
+          [groupsAttributeClaimName]: "groups",
+        },
+        userPoolId: userPool.userPoolId
+      });
+    }
 
     if (identityProviderMetadataURLOrFile && identityProviderName) {
-
-      cognitoIdp = new cognito.CfnUserPoolIdentityProvider(this, "CognitoIdP", {
+      cognitoIdps[identityProviderName] = new cognito.CfnUserPoolIdentityProvider(this, "CognitoIdP", {
         providerName: identityProviderName,
         providerDetails: Utils.isURL(identityProviderMetadataURLOrFile) ? {
           MetadataURL: identityProviderMetadataURLOrFile
@@ -323,8 +355,6 @@ export class BackendStack extends cdk.Stack {
         },
         userPoolId: userPool.userPoolId
       });
-
-      supportedIdentityProviders.push(identityProviderName);
     }
 
     // ========================================================================
@@ -337,7 +367,7 @@ export class BackendStack extends cdk.Stack {
     // - https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-client-apps.html
 
     const cfnUserPoolClient = new cognito.CfnUserPoolClient(this, "CognitoAppClient", {
-      supportedIdentityProviders: supportedIdentityProviders,
+      supportedIdentityProviders: Object.keys(cognitoIdps),
       clientName: "Web",
       allowedOAuthFlowsUserPoolClient: true,
       allowedOAuthFlows: ["code"],
@@ -352,9 +382,7 @@ export class BackendStack extends cdk.Stack {
     });
 
     // we want to make sure we do things in the right order
-    if (cognitoIdp) {
-      cfnUserPoolClient.node.addDependency(cognitoIdp);
-    }
+    Object.values(cognitoIdps).filter(idp => idp).forEach(idp => cfnUserPoolClient.node.addDependency(idp!!))
 
     // ========================================================================
     // Resource: Cognito Auth Domain

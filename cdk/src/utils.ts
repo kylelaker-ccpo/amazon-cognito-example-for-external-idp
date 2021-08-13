@@ -1,7 +1,7 @@
 import * as aws from "aws-sdk";
-import {CloudFormation} from "aws-sdk";
+import { CloudFormation } from "aws-sdk";
+import { URL } from "url";
 import apigateway = require("@aws-cdk/aws-apigateway");
-import {URL} from "url";
 
 export class Utils {
   static async getStackOutputs(stackName: string, stackRegion: string): Promise<CloudFormation.Output[]> {
@@ -9,6 +9,14 @@ export class Utils {
     const cfn = new aws.CloudFormation();
     const result = await cfn.describeStacks({StackName: stackName}).promise();
     return result.Stacks![0].Outputs!;
+  }
+
+  static asBool(value: string): boolean {
+    const truthyValues = ["true", "1", "yes"];
+    let cleanedValue = value;
+    cleanedValue = value.trim();
+    cleanedValue = value.toLowerCase();
+    return truthyValues.includes(cleanedValue);
   }
 
   static getEnv(variableName: string, defaultValue?: string) {
